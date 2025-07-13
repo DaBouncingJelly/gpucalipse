@@ -2,60 +2,71 @@
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <DirectXMath.h>
+
+#include "mymath.h"
 
 struct Graphics {
-    ID3D11Device* device = nullptr;
-    ID3D11DeviceContext* context = nullptr;
-    IDXGISwapChain* swap_chain = nullptr;
-    ID3D11RenderTargetView* rtv = nullptr;
-    ID3D11VertexShader* vs = nullptr;
-    ID3D11PixelShader* ps = nullptr;
-    ID3D11InputLayout* il = nullptr;
-    ID3D11Buffer* vbo = nullptr;
-};
+    ID3D11Device* device;
+    ID3D11DeviceContext* context;
+    IDXGISwapChain* swap_chain;
+    ID3D11RenderTargetView* rtv;
+    ID3D11DepthStencilView* dsv;
+    ID3D11VertexShader* vs;
+    ID3D11PixelShader* ps;
+    ID3D11InputLayout* il;
+    ID3D11Buffer* vb;
+    ID3D11Buffer* ib;
+    ID3D11Buffer* cb;
 
-using DirectX::XMFLOAT3;
-using DirectX::XMFLOAT4;
+    u32 width;
+    u32 height;
+};
 
 struct Vertex {
     XMFLOAT3 Pos;
     XMFLOAT4 Color;
 };
 
-// Vertex shader source
+struct ConstantBuffer {
+    XMMATRIX world;
+    XMMATRIX view;
+    XMMATRIX proj;
+};
+
 const char* g_vertexShaderSource = R"(
-struct VS_INPUT
-{
+cbuffer ConstantBuffer : register(b0) {
+    matrix world;
+    matrix view;
+    matrix proj;
+}
+
+struct VS_INPUT {
     float4 Pos : POSITION;
     float4 Color : COLOR;
 };
 
-struct PS_INPUT
-{
+struct PS_INPUT {
     float4 Pos : SV_POSITION;
     float4 Color : COLOR;
 };
 
-PS_INPUT VS(VS_INPUT input)
-{
+PS_INPUT VS(VS_INPUT input) {
     PS_INPUT output = (PS_INPUT)0;
-    output.Pos = input.Pos;
+    output.Pos = mul(input.Pos, world);
+    output.Pos = mul(output.Pos, view);
+    output.Pos = mul(output.Pos, proj);
     output.Color = input.Color;
     return output;
 }
 )";
 
-// Pixel shader source
 const char* g_pixelShaderSource = R"(
-struct PS_INPUT
-{
+struct PS_INPUT {
     float4 Pos : SV_POSITION;
     float4 Color : COLOR;
 };
 
-float4 PS(PS_INPUT input) : SV_Target
-{
+float4 PS(PS_INPUT input) : SV_Target {
     return input.Color;
 }
 )";
@@ -70,6 +81,8 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
     GetClientRect(window_handle, &rc);
     UINT width = rc.right - rc.left;
     UINT height = rc.bottom - rc.top;
+    graphics->width = width;
+    graphics->height = height;
 
     UINT createDeviceFlags = 0;
 #ifdef _DEBUG
@@ -106,11 +119,14 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
                 &graphics->device, nullptr, &graphics->context);
         }
 
-        if (SUCCEEDED(hr)) break;
+        if (SUCCEEDED(hr)) {
+            break;
+        }
     }
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
-    // Create swap chain
     IDXGIFactory1* dxgiFactory = nullptr;
     {
         IDXGIDevice* dxgiDevice = nullptr;
@@ -127,7 +143,9 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
             dxgiDevice->Release();
         }
     }
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
     DXGI_SWAP_CHAIN_DESC sd = {};
     sd.BufferCount = 1;
@@ -145,22 +163,55 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
     hr = dxgiFactory->CreateSwapChain(graphics->device, &sd,
                                       &graphics->swap_chain);
     dxgiFactory->Release();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
-    // Create render target view
     ID3D11Texture2D* pBackBuffer = nullptr;
     hr = graphics->swap_chain->GetBuffer(
         0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&pBackBuffer));
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
     hr = graphics->device->CreateRenderTargetView(pBackBuffer, nullptr,
                                                   &graphics->rtv);
     pBackBuffer->Release();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
-    graphics->context->OMSetRenderTargets(1, &graphics->rtv, nullptr);
+    ID3D11Texture2D* pDepthStencil = nullptr;
+    D3D11_TEXTURE2D_DESC descDepth = {};
+    descDepth.Width = width;
+    descDepth.Height = height;
+    descDepth.MipLevels = 1;
+    descDepth.ArraySize = 1;
+    descDepth.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    descDepth.SampleDesc.Count = 1;
+    descDepth.SampleDesc.Quality = 0;
+    descDepth.Usage = D3D11_USAGE_DEFAULT;
+    descDepth.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    descDepth.CPUAccessFlags = 0;
+    descDepth.MiscFlags = 0;
+    hr = graphics->device->CreateTexture2D(&descDepth, nullptr, &pDepthStencil);
+    if (FAILED(hr)) {
+        return hr;
+    }
 
-    // Setup viewport
+    D3D11_DEPTH_STENCIL_VIEW_DESC descDSV = {};
+    descDSV.Format = descDepth.Format;
+    descDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    descDSV.Texture2D.MipSlice = 0;
+    hr = graphics->device->CreateDepthStencilView(pDepthStencil, &descDSV,
+                                                  &graphics->dsv);
+    pDepthStencil->Release();
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    graphics->context->OMSetRenderTargets(1, &graphics->rtv, graphics->dsv);
+
     D3D11_VIEWPORT vp;
     vp.Width = (FLOAT)width;
     vp.Height = (FLOAT)height;
@@ -170,7 +221,6 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
     vp.TopLeftY = 0;
     graphics->context->RSSetViewports(1, &vp);
 
-    // Compile vertex shader
     ID3DBlob* pVSBlob = nullptr;
     hr =
         CompileShaderFromSource(g_vertexShaderSource, "VS", "vs_4_0", &pVSBlob);
@@ -184,7 +234,6 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
         return hr;
     }
 
-    // Define input layout
     D3D11_INPUT_ELEMENT_DESC layout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
          D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -197,29 +246,38 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
         layout, numElements, pVSBlob->GetBufferPointer(),
         pVSBlob->GetBufferSize(), &graphics->il);
     pVSBlob->Release();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
     graphics->context->IASetInputLayout(graphics->il);
 
-    // Compile pixel shader
     ID3DBlob* pPSBlob = nullptr;
     hr = CompileShaderFromSource(g_pixelShaderSource, "PS", "ps_4_0", &pPSBlob);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
     hr = graphics->device->CreatePixelShader(pPSBlob->GetBufferPointer(),
                                              pPSBlob->GetBufferSize(), nullptr,
                                              &graphics->ps);
     pPSBlob->Release();
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        return hr;
+    }
 
-    // Create vertex buffer
     Vertex vertices[] = {
-        {XMFLOAT3(0.0f, 0.5f, 0.0f),
-         XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)},  // Top - Red
-        {XMFLOAT3(0.5f, -0.5f, 0.0f),
-         XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f)},  // Bottom Right - Green
-        {XMFLOAT3(-0.5f, -0.5f, 0.0f),
-         XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f)}  // Bottom Left - Blue
+        // Front face
+        {XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)},
+        {XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f)},
+        {XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f)},
+        {XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f)},
+
+        // Back face
+        {XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f)},
+        {XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f)},
+        {XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f)},
+        {XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f)},
     };
 
     D3D11_BUFFER_DESC bd = {};
@@ -230,13 +288,53 @@ HRESULT graphics_init(Graphics* graphics, HWND window_handle) {
 
     D3D11_SUBRESOURCE_DATA InitData = {};
     InitData.pSysMem = vertices;
-    hr = graphics->device->CreateBuffer(&bd, &InitData, &graphics->vbo);
-    if (FAILED(hr)) return hr;
+    hr = graphics->device->CreateBuffer(&bd, &InitData, &graphics->vb);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    WORD indices[] = {// Front face  (z = -1)
+                      0, 1, 2, 0, 2, 3,
+
+                      // Back face   (z = +1)
+                      4, 5, 6, 4, 6, 7,
+
+                      // Left face   (x = -1)
+                      4, 7, 1, 4, 1, 0,
+
+                      // Right face  (x = +1)
+                      3, 2, 6, 3, 6, 5,
+
+                      // Top face    (y = +1)
+                      1, 7, 6, 1, 6, 2,
+
+                      // Bottom face (y = -1)
+                      4, 0, 3, 4, 3, 5};
+
+    bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = sizeof(indices);
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    bd.CPUAccessFlags = 0;
+    InitData.pSysMem = indices;
+    hr = graphics->device->CreateBuffer(&bd, &InitData, &graphics->ib);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = sizeof(ConstantBuffer);
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    bd.CPUAccessFlags = 0;
+    hr = graphics->device->CreateBuffer(&bd, nullptr, &graphics->cb);
+    if (FAILED(hr)) {
+        return hr;
+    }
 
     UINT stride = sizeof(Vertex);
     UINT offset = 0;
-    graphics->context->IASetVertexBuffers(0, 1, &graphics->vbo, &stride,
-                                            &offset);
+    graphics->context->IASetVertexBuffers(0, 1, &graphics->vb, &stride,
+                                          &offset);
+    graphics->context->IASetIndexBuffer(graphics->ib, DXGI_FORMAT_R16_UINT, 0);
     graphics->context->IASetPrimitiveTopology(
         D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -248,23 +346,17 @@ void graphics_cleanup(Graphics* graphics) {
         return;
     }
     if (graphics->context) graphics->context->ClearState();
-    if (graphics->vbo) graphics->vbo->Release();
+    if (graphics->cb) graphics->cb->Release();
+    if (graphics->ib) graphics->ib->Release();
+    if (graphics->vb) graphics->vb->Release();
     if (graphics->il) graphics->il->Release();
     if (graphics->vs) graphics->vs->Release();
     if (graphics->ps) graphics->ps->Release();
+    if (graphics->dsv) graphics->dsv->Release();
     if (graphics->rtv) graphics->rtv->Release();
     if (graphics->swap_chain) graphics->swap_chain->Release();
     if (graphics->context) graphics->context->Release();
     if (graphics->device) graphics->device->Release();
-}
-
-void render(Graphics* graphics) {
-    float color[4] = {0.0f, 0.125f, 0.3f, 1.0f};
-    graphics->context->ClearRenderTargetView(graphics->rtv, color);
-    graphics->context->VSSetShader(graphics->vs, nullptr, 0);
-    graphics->context->PSSetShader(graphics->ps, nullptr, 0);
-    graphics->context->Draw(3, 0);
-    graphics->swap_chain->Present(0, 0);
 }
 
 HRESULT CompileShaderFromSource(const char* szShader, LPCSTR szEntryPoint,

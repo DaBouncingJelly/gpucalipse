@@ -55,4 +55,4 @@ HRESULT window_init(Window* wnd, HINSTANCE hInstance, int nCmdShow) {
     return S_OK;
 }
 
-void update_window(Window& window) {  }
+void update_window(Window& window) {}
