@@ -15,3 +15,16 @@ using b8 = i8;
 using b32 = i32;
 using f32 = float;
 using f64 = double;
+
+enum class Status {
+    Success = 0,
+    Error = 1,
+};
+
+enum class Result {
+    Success = 0,
+    Error = 1,
+    
+    // Would be nice to have sth like
+    // Error(String)
+};
